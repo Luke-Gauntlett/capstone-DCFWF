@@ -210,8 +210,20 @@ def format_postcode(value):
 def get_coordinates(postcodes):
     found_coordinates = {}
     
-    if not isinstance(postcodes, (list, pd.Series)):
+    # Coerce to a plain Python list (handles list, Series, tuple, set, numpy array)
+    try:
+        if isinstance(postcodes, pd.Series):
+            postcodes = postcodes.tolist()
+        else:
+            postcodes = list(postcodes)
+    except TypeError:
         return found_coordinates
+    
+    # Clean & de-dup
+    postcodes = [pc for pc in postcodes if pc]
+    if not postcodes:
+        return found_coordinates
+    postcodes = sorted(set(postcodes))
     
     api_url = "https://api.postcodes.io/postcodes/"
     
@@ -222,9 +234,7 @@ def get_coordinates(postcodes):
             
         try:
             response = requests.post(api_url, json={"postcodes": batch}, timeout=30)
-            
             response.raise_for_status()
-            
             data = response.json()
             
             if data.get("status") == 200:
@@ -253,7 +263,8 @@ def add_coordinates(orders_data):
     
     order_postcodes = orders_data["shipping"].apply(format_postcode)
     
-    unique_postcodes = order_postcodes.unique()
+    # FIX: .unique() returns a numpy array; convert to list so get_coordinates sees it
+    unique_postcodes = order_postcodes.dropna().unique().tolist()
     
     if len(unique_postcodes) > 0:
         print(f"Requesting coordinates for {len(unique_postcodes)} unique postcodes.")
