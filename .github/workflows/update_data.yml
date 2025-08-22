@@ -21,7 +21,6 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Fail fast if WooCommerce secrets are missing (using your names)
       - name: Validate required secrets
         run: |
           [ -n "${CONSUMER_KEY}" ] || { echo "::error::CONSUMER_KEY is not set"; exit 1; }
@@ -30,7 +29,7 @@ jobs:
           CONSUMER_KEY: ${{ secrets.CONSUMER_KEY }}
           CONSUMER_SECRET: ${{ secrets.CONSUMER_SECRET }}
 
-      # Quick 200-check to WooCommerce API; fails on 401/403/5xx
+      
       - name: Smoke test WooCommerce API (orders)
         run: |
           set -e
@@ -49,7 +48,6 @@ jobs:
           # Run the pipeline (extract.py reads CONSUMER_KEY/CONSUMER_SECRET)
           python -m src.run_pipeline
 
-          # Commit marker file if created/updated
           if [ -f data/other/last_extraction_time.json ]; then
             git config --global user.name "github-actions[bot]"
             git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -57,7 +55,7 @@ jobs:
             git commit -m "Update last extraction time" || echo "No changes to commit"
             git push
           else
-            echo "No extraction marker file to commit"
+            echo "No extraction file to commit"
           fi
         env:
           DB_HOST: ${{ secrets.DB_HOST }}

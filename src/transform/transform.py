@@ -2,7 +2,6 @@ import pandas as pd
 import json
 import hashlib
 import requests
-from src.utils.utils import get_db_engine
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -43,7 +42,7 @@ def main(raw_data):
     # Add other useful columns
     deduplicated_data["is_guest"] = deduplicated_data["customer_id"].fillna(0).astype(int) == 0      # Mark if user was logged in or guest
     deduplicated_data["total_items"] = deduplicated_data["line_items"].apply(count_total_items)      # Count total items in order
-    deduplicated_data["distinct_items"] = deduplicated_data["line_items"].apply(count_unique_items) # Count different items in order
+    deduplicated_data["distinct_items"] = deduplicated_data["line_items"].apply(count_unique_items)  # Count different items in order
     deduplicated_data["order_day"] = deduplicated_data["date_created"].dt.dayofweek                  # Day of the week
     
     # Simplify complicated columns
@@ -210,7 +209,6 @@ def format_postcode(value):
 def get_coordinates(postcodes):
     found_coordinates = {}
     
-    # Coerce to a plain Python list (handles list, Series, tuple, set, numpy array)
     try:
         if isinstance(postcodes, pd.Series):
             postcodes = postcodes.tolist()
@@ -263,7 +261,6 @@ def add_coordinates(orders_data):
     
     order_postcodes = orders_data["shipping"].apply(format_postcode)
     
-    # FIX: .unique() returns a numpy array; convert to list so get_coordinates sees it
     unique_postcodes = order_postcodes.dropna().unique().tolist()
     
     if len(unique_postcodes) > 0:

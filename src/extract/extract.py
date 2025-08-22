@@ -41,6 +41,7 @@ def main():
             all_raw_data.extend(data)
         else:
             print(f"No new data found for {endpoint}")
+    
             
     # save current timestamp (minus 2 mins) if anything new came in
     if all_raw_data:
