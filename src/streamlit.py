@@ -1,405 +1,463 @@
-# streamlit.py (or dashboard.py)
-# Streamlit dashboard with robust UK heatmap + insights
-# Reads DB_TABLE/DB_SCHEMA from .env and uses utils.utils.get_db_engine()
-
 import os
 import json
-import numpy as np
 import pandas as pd
-import altair as alt
 import pydeck as pdk
 import streamlit as st
 from dotenv import load_dotenv
 from utils.utils import get_db_engine
+import plotly.express as px
+import plotly.graph_objects as go
 
-# ---------------------- Config ----------------------
+#our colours
+logo_green = "#0A8F60" 
+darker_green = "#045539"  
+lighter_green = "#74D6B2"  
+
+#load credentials
 load_dotenv()
-DB_TABLE  = os.getenv("DB_TABLE")
-DB_SCHEMA = os.getenv("DB_SCHEMA", "public")
+db_table = os.getenv("DB_TABLE")
+db_schema = os.getenv("DB_SCHEMA", "public")
 
-PAID_STATUSES = {"processing", "completed"}  # adjust to your workflow
-st.set_page_config(page_title="DC Freshwater Fish – Orders", layout="wide")
+title = "DC Freshwater Fish - Orders"
+logo = "https://dcfreshwaterfish.co.uk/wp-content/uploads/2016/12/dc-freshwater-fish.png"
 
-# ---------------------- Data ------------------------
-@st.cache_data(ttl=600, show_spinner=False)
-def load_orders() -> pd.DataFrame:
-    engine = get_db_engine()
-    df = pd.read_sql_table(DB_TABLE, con=engine, schema=DB_SCHEMA)
+st.set_page_config(page_title=title, page_icon=logo, layout="wide")
 
-    # Parse dates safely
-    for c in ("date_created", "date_modified", "date_paid"):
-        if c in df.columns:
-            df[c] = pd.to_datetime(df[c], errors="coerce")
 
-    # Coerce numerics
-    for c in ("order_total", "shipping_total", "total_tax", "discount_total"):
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Coerce lat/lon to numeric (strings/"None" -> NaN)
-    for c in ("latitude", "longitude"):
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+def main():
+    all_orders = load_orders_from_database()
 
-    # Coerce JSONB to Python objects if some rows returned as strings
-    def _coerce_json(x):
-        if isinstance(x, (list, dict)) or x is None or (isinstance(x, float) and np.isnan(x)):
-            return x
-        if isinstance(x, str) and x.strip():
+    # logo and title
+    logo_column, title_column = st.columns([1, 12])
+    with logo_column:
+        st.image(logo)
+    with title_column:
+        st.markdown(f"<h1 style='text-align: center'>{title}</h1>", unsafe_allow_html=True)
+
+    st.markdown("---")
+    
+    # map, space and bar columns
+    map_column, space, performance_column = st.columns([1, 0.05, 2])
+
+##################################################################   map  ##################################################################
+    with map_column:
+        st.markdown("### Areas with most orders")
+        coords_df = all_orders.dropna(subset=["latitude", "longitude"]).copy()
+
+        #start map over uk
+        map_initial_view = pdk.ViewState(latitude=53.6, longitude=-2.8, zoom=4.85, pitch=35)
+
+        map_hex_layer = pdk.Layer(
+            "HexagonLayer",
+            data=coords_df,
+            get_position="[longitude, latitude]",
+            radius=4000,
+            elevation_scale=30,
+            elevation_range=[0, 2500],
+            extruded=True,
+            pickable=True,
+        )
+    
+        pydeck_map = pdk.Deck(
+            map_style="dark",
+            initial_view_state=map_initial_view,
+            layers=[map_hex_layer],
+            height=360,
+            tooltip={"text": "Orders: {elevationValue}"},
+        )
+        st.pydeck_chart(pydeck_map, use_container_width=True)
+
+    # Space between map and graph
+    with space:
+        st.write("")
+
+##################################################################   performance graph  ##################################################################
+    with performance_column:
+        st.markdown("### Company performance over time")
+        
+        # selector
+        selected_metric = st.radio("", ["Orders per day", "Average spend per order"])
+        
+        orders_with_dates = all_orders.dropna(subset=["date_created"]).copy()
+        orders_with_dates["date_created"] = pd.to_datetime(orders_with_dates["date_created"], errors="coerce")
+        orders_with_dates["date_only"] = orders_with_dates["date_created"].dt.normalize()
+
+        daily = (
+            orders_with_dates
+            .groupby("date_only")
+            .agg(num_orders=("order_id", "count"),
+                 revenue=("revenue_net", "sum"))
+            .reset_index()
+            .fillna(0)
+        )
+        daily["average_spend"] = daily.apply(
+            lambda r: (r["revenue"] / r["num_orders"]) if r["num_orders"] else 0.0, axis=1
+        )
+
+        years = sorted(daily["date_only"].dt.year.unique())
+        mid_year_dates = pd.to_datetime(pd.Series(years).astype(str) + "-07-01")
+
+        if selected_metric == "Orders per day":
+            y_axis_title = "Number of orders"
+            series = daily.rename(columns={"date_only": "Date", "num_orders": "Value"})[["Date", "Value"]]
+            yearly_averages_df = (
+                daily.assign(year=daily["date_only"].dt.year)
+                    .groupby("year", as_index=False)
+                    .agg(yearly_avg=("num_orders", "mean"))
+            )
+
+        else:
+            y_axis_title = "Average order amount (£)"
+            series = daily.rename(columns={"date_only": "Date", "average_spend": "Value"})[["Date", "Value"]]
+            yearly_avg = (
+                daily.assign(year=daily["date_only"].dt.year)
+                    .groupby("year", as_index=False)
+                    .agg(revenue_sum=("revenue", "sum"), orders_sum=("num_orders", "sum"))
+            )
+            yearly_avg["yearly_avg"] = (yearly_avg["revenue_sum"] / yearly_avg["orders_sum"].replace(0, pd.NA)).fillna(0)
+            yearly_averages_df = yearly_avg[["year", "yearly_avg"]]
+
+        yearly_averages_df["plot_date"] = pd.to_datetime(yearly_averages_df["year"].astype(str) + "-07-01")
+
+        fig_perf = go.Figure()
+
+        # background alternating year bands
+        for y in years:
+            if y % 2 == 1:
+                fig_perf.add_vrect(
+                    x0=pd.Timestamp(f"{y}-01-01"),
+                    x1=pd.Timestamp(f"{y}-12-31"),
+                    fillcolor="rgba(229,231,235,0.45)",
+                    line_width=0,
+                    layer="below",
+                )
+
+        # plot daily bars
+        fig_perf.add_trace(go.Bar(
+            x=series["Date"],
+            y=series["Value"],
+            marker_color=logo_green,
+            name="Daily",
+            hovertemplate="Date=%{x|%Y-%m-%d}<br>Value=%{y}<extra></extra>"
+        ))
+
+        # plot yearly average trend line
+        fig_perf.add_trace(go.Scatter(
+            x=yearly_averages_df["plot_date"],
+            y=yearly_averages_df["yearly_avg"],
+            mode="lines+markers",
+            line=dict(width=3, color=darker_green),
+            marker=dict(size=8),
+            name="Yearly average",
+            hovertemplate="Year=%{x|%Y}<br>Avg=%{y:.2f}<extra></extra>"
+        ))
+
+        fig_perf.update_layout(
+            height=460,
+            margin=dict(l=24, r=8, t=40, b=8),
+            xaxis=dict(
+                title="Date",
+                tickvals=mid_year_dates,
+                tickformat="%Y",
+                showgrid=False
+            ),
+            yaxis=dict(title=y_axis_title),
+            showlegend=False,
+        )
+
+        st.plotly_chart(fig_perf, use_container_width=True)
+
+
+##################################################################   Best & Worst Products  ##################################################################
+    st.markdown("---")
+    st.markdown("#### Best & worst products")
+
+    # filter columns
+    date_column, metric_column, number_column = st.columns([1, 1, 1])
+    
+    date_created_series = pd.to_datetime(all_orders["date_created"], errors="coerce").dropna()
+    min_date, max_date = date_created_series.min().date(), date_created_series.max().date()
+
+    with date_column:
+        selected_date_range = st.date_input("Date range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+    with metric_column:
+        rank_by = st.selectbox("Rank by", ["Revenue", "Quantity", "Revenue per unit"], index=0)
+    with number_column:
+        num_to_show = st.number_input("How many to show", min_value=1, max_value=50, value=10, step=1)
+
+    product_data_df = all_orders.copy()
+    
+    if all(selected_date_range):
+        start_date = pd.to_datetime(pd.Timestamp(selected_date_range[0]).floor("D"))
+        end_date = pd.to_datetime(pd.Timestamp(selected_date_range[1]).ceil("D"))
+        date_filter = pd.to_datetime(product_data_df["date_created"], errors="coerce").between(start_date, end_date, inclusive="both")
+        product_data_df = product_data_df[date_filter]
+
+    exploded_items_df = product_data_df[["order_id", "item_details"]].explode("item_details").dropna(subset=["item_details"])
+    item_details_df = pd.json_normalize(exploded_items_df["item_details"])
+
+    item_details_df["name"] = item_details_df.get("name").fillna("Unknown")
+    item_details_df["quantity"] = pd.to_numeric(item_details_df.get("quantity", 0), errors="coerce").fillna(0)
+    item_details_df["total_price"] = pd.to_numeric(item_details_df.get("total_price", 0.0), errors="coerce").fillna(0.0)
+    item_details_df["order_id"] = exploded_items_df["order_id"].values
+
+    product_agg_df = (
+        item_details_df
+        .groupby(["product_id", "name"], dropna=False)
+        .agg(orders=("order_id", "nunique"),
+             quantity=("quantity", "sum"),
+             revenue=("total_price", "sum"))
+        .reset_index()
+    )
+    product_agg_df["name"] = product_agg_df["name"].str.replace("&ndash;", "–").str.replace("&amp;", "&")
+
+    #to hide the demo products
+    product_agg_df = product_agg_df[product_agg_df["orders"] >= 7].copy()
+
+    if product_agg_df.empty:
+        st.info("No products match the current filters")
+    else:
+        product_agg_df["price_per_item"] = product_agg_df.apply(
+            lambda r: (r["revenue"] / r["quantity"]) if r["quantity"] else 0.0, axis=1
+        )
+        sort_column = {"Revenue": "revenue", "Quantity": "quantity", "Revenue per unit": "price_per_item"}[rank_by]
+        num_to_show = int(max(1, min(num_to_show, len(product_agg_df))))
+        top_products = product_agg_df.nlargest(num_to_show, sort_column)
+        bottom_products = product_agg_df.nsmallest(num_to_show, sort_column)
+
+        def product_table(df):
+            t = df.copy()
+            t["Revenue (£)"] = t["revenue"].map(lambda v: f"£{v:,.2f}")
+            t["Quantity"] = t["quantity"].astype(int).map("{:,}".format)
+            t["Orders"] = t["orders"].astype(int).map("{:,}".format)
+            t["Price per item"] = t["price_per_item"].map(lambda v: f"£{v:,.2f}")
+            t.rename(columns={"name": "Product"}, inplace=True)
+            return t[["Product", "Orders", "Quantity", "Revenue (£)", "Price per item"]]
+
+        col_top, col_bottom = st.columns(2)
+        with col_top:
+            st.markdown(f"**Top {num_to_show} by {rank_by.lower()}**")
+            st.dataframe(product_table(top_products), use_container_width=True, hide_index=True)
+        with col_bottom:
+            st.markdown(f"**Bottom {num_to_show} by {rank_by.lower()}**")
+            st.dataframe(product_table(bottom_products), use_container_width=True, hide_index=True)
+
+##################################################################   Logged-in vs Guest  ##################################################################
+    st.markdown("---")
+    st.markdown("#### Logged-in vs guests")
+
+    for col in ("order_total", "shipping_total"):
+        if col in all_orders.columns:
+            all_orders[col] = pd.to_numeric(all_orders[col], errors="coerce")
+            
+    if "revenue_net" not in all_orders.columns and "order_total" in all_orders.columns:
+        if "shipping_total" in all_orders.columns:
+            all_orders["revenue_net"] = (all_orders["order_total"] - all_orders["shipping_total"]).fillna(all_orders["order_total"])
+        else:
+            all_orders["revenue_net"] = all_orders["order_total"]
+
+    metric_choice = st.selectbox(
+        "Metric",
+        ["Average items per order", "Average spend per order", "Average orders per customer"],
+        index=0,
+    )
+    
+    df = all_orders.copy()
+    
+
+    df["customer_type"] = df["is_guest"].map({True: "Guest", False: "Logged-in"})
+
+
+    df = df[df["customer_type"].notna()]
+
+    if metric_choice == "Average items per order":
+        avg_items_df = df.groupby("customer_type")["total_items"].mean().reset_index(name="value")
+        
+        fig_customer_type = px.bar(
+            avg_items_df, x="customer_type", y="value",
+            labels={"customer_type": "", "value": "Avg items per order"},
+            color="customer_type",
+            color_discrete_map={"Guest": lighter_green, "Logged-in": logo_green}
+        )
+        
+        fig_customer_type.update_traces(texttemplate="%{y:.2f}", textposition="outside", cliponaxis=False, showlegend=False)
+        fig_customer_type.update_layout(height=300, margin=dict(t=40))
+        
+        st.plotly_chart(fig_customer_type, use_container_width=True)
+
+    elif metric_choice == "Average spend per order":
+        
+        avg_spend_df = df.groupby("customer_type")["revenue_net"].mean().reset_index(name="value")
+        
+        fig_customer_type = px.bar(
+            avg_spend_df, x="customer_type", y="value",
+            labels={"customer_type": "", "value": "Average spend per order (£)"},
+            color="customer_type",
+            color_discrete_map={"Guest": lighter_green, "Logged-in": logo_green}
+        )
+        
+        fig_customer_type.update_traces(texttemplate="£%{y:.2f}", textposition="outside", cliponaxis=False, showlegend=False)
+        fig_customer_type.update_layout(height=300, margin=dict(t=40))
+        
+        st.plotly_chart(fig_customer_type, use_container_width=True)
+
+    elif metric_choice == "Average orders per customer":
+    
+            per_customer = (
+                df.dropna(subset=["customer_identifier"])
+                .groupby(["customer_type", "customer_identifier"])["order_id"]
+                .nunique()
+                .reset_index(name="orders_per_customer")
+            )
+
+            avg_df = per_customer.groupby("customer_type", as_index=False)["orders_per_customer"].mean().rename(columns={"orders_per_customer": "avg"})
+            
+            mode_df = per_customer.groupby("customer_type")["orders_per_customer"].agg(lambda s: s.mode().iloc[0] if not s.mode().empty else None).reset_index(name="mode")
+            
+            out = avg_df.merge(mode_df, on="customer_type", how="left")
+            
+            out["label"] = out.apply(lambda r: f"{r['avg']:.2f} avg • {('—' if pd.isna(r['mode']) else int(r['mode']))} most common", axis=1)
+
+            fig_seg = px.bar(
+                out, x="customer_type", y="avg",
+                labels={"customer_type": "", "avg": "Avg orders per customer"},
+                color="customer_type",
+                color_discrete_map={"Guest": lighter_green, "Logged-in": logo_green}
+            )
+            fig_seg.update_traces(text=out["label"], textposition="outside", cliponaxis=False, showlegend=False)
+            fig_seg.update_layout(height=300, margin=dict(t=40))
+            
+            st.plotly_chart(fig_seg, use_container_width=True)
+        
+##################################################################   Mobile vs Desktop  ##################################################################
+    st.markdown("---")
+    st.markdown("#### Mobile vs Desktop")
+
+    device_df = all_orders.copy()
+    
+    if "device_type" in device_df.columns:
+        device_df["device_type"] = device_df["device_type"].astype(str).str.strip()
+        device_df = device_df[device_df["device_type"].str.lower().isin(["mobile", "desktop"])]
+
+        if not device_df.empty:
+            order_by_device = device_df.groupby("device_type", as_index=False)["order_id"].count()
+            total = order_by_device["order_id"].sum()
+            order_by_device["percent_orders"] = (order_by_device["order_id"] / total) * 100
+
+            avg_spend_by_device = (
+                device_df.groupby("device_type", as_index=False)["order_total"].mean()
+                if "order_total" in device_df.columns else
+                pd.DataFrame(columns=["device_type", "order_total"])
+            )
+            avg_items_by_device = (
+                device_df.groupby("device_type", as_index=False)["total_items"].mean()
+                if "total_items" in device_df.columns else
+                pd.DataFrame(columns=["device_type", "total_items"])
+            )
+
+            spend_column, order_column, items_column = st.columns(3)
+
+            with spend_column:
+                st.markdown("**Average Spend (£)**")
+                if not avg_spend_by_device.empty:
+                    fig_spend = px.bar(
+                        avg_spend_by_device, x="device_type", y="order_total",
+                        labels={"device_type": "Device", "order_total": "Avg Spend (£)"},
+                        color="device_type",
+                        color_discrete_map={"Mobile": lighter_green, "Desktop": logo_green}
+                    )
+                    
+                    fig_spend.update_traces(texttemplate="£%{y:.2f}", textposition="outside", cliponaxis=False, showlegend=False)
+                    fig_spend.update_layout(height=300, margin=dict(l=0, r=0, t=40, b=0), xaxis_title="Device")
+                    st.plotly_chart(fig_spend, use_container_width=True)
+                else:
+                    st.info("No data for device types.")
+
+            with order_column:
+                st.markdown("**% of Orders**")
+                if not order_by_device.empty:
+                    fig_pie = px.pie(
+                        order_by_device,
+                        values="percent_orders",
+                        names="device_type",
+                        color="device_type",
+                        color_discrete_map={"Mobile": lighter_green, "Desktop": logo_green},
+                        hole=0
+                    )
+                    fig_pie.update_traces(texttemplate="%{percent:.1%}")
+                    fig_pie.update_layout(height=300, margin=dict(l=0, r=0, t=40, b=0), legend_title="Device")
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                else:
+                    st.info("No data for device types.")
+
+            with items_column:
+                st.markdown("**Average Items**")
+                if not avg_items_by_device.empty:
+                    fig_items = px.bar(
+                        avg_items_by_device, x="device_type", y="total_items",
+                        labels={"device_type": "Device", "total_items": "Avg Items"},
+                        color="device_type",
+                        color_discrete_map={"Mobile": lighter_green, "Desktop": logo_green}
+                    )
+                    # keep labels visible
+                    fig_items.update_traces(texttemplate="%{y:.1f}", textposition="outside", cliponaxis=False, showlegend=False)
+                    fig_items.update_layout(height=300, margin=dict(l=0, r=0, t=40, b=0), xaxis_title="Device")
+                    st.plotly_chart(fig_items, use_container_width=True)
+                else:
+                    st.info("No data for device types.")
+        else:
+            st.info("No data for device types.")
+    else:
+        st.info("Missing the 'device_type' column. Cannot create these charts.")
+
+
+##################################################################   LOAD DATA  ##################################################################
+def load_orders_from_database():
+    db_engine = get_db_engine()
+    orders_df = pd.read_sql_table(db_table, con=db_engine, schema=db_schema)
+
+    for col in ("date_created", "date_modified", "date_paid"):
+        if col in orders_df.columns:
+            orders_df[col] = pd.to_datetime(orders_df[col], errors="coerce")
+
+
+    for col in ("order_total", "shipping_total", "total_items", "latitude", "longitude"):
+        if col in orders_df.columns:
+            orders_df[col] = pd.to_numeric(orders_df[col], errors="coerce")
+
+    # JSON (possibly serialized)
+    def _parse_json(v):
+        if isinstance(v, (list, dict)) or v is None or (isinstance(v, float) and pd.isna(v)):
+            return v
+        if isinstance(v, str) and v.strip():
             try:
-                return json.loads(x)
+                return json.loads(v)
             except Exception:
                 return None
         return None
 
-    if "item_details" in df.columns:
-        df["item_details"] = df["item_details"].apply(_coerce_json)
-    if "coupon_details" in df.columns:
-        df["coupon_details"] = df["coupon_details"].apply(_coerce_json)
+    if "item_details" in orders_df.columns:
+        orders_df["item_details"] = orders_df["item_details"].apply(_parse_json)
 
-    # Fill device_type if missing
-    if "device_type" in df.columns:
-        df["device_type"] = df["device_type"].fillna("Unknown")
-
-    return df
-
-df = load_orders()
-if df.empty:
-    st.info("No orders found.")
-    st.stop()
-
-# ---------------------- Filters ---------------------
-with st.sidebar:
-    st.header("Filters")
-    if "date_created" in df.columns:
-        min_date = pd.to_datetime(df["date_created"].min())
-        max_date = pd.to_datetime(df["date_created"].max())
-        date_range = st.date_input(
-            "Order date range",
-            value=(min_date.date(), max_date.date()),
-            min_value=min_date.date(),
-            max_value=max_date.date(),
-        )
-    else:
-        date_range = (None, None)
-
-    status_opts = sorted(df.get("status", pd.Series(dtype=object)).dropna().unique().tolist())
-    default_status = [s for s in status_opts if s in PAID_STATUSES] or status_opts
-    status_sel = st.multiselect("Statuses", options=status_opts, default=default_status)
-
-    device_opts = sorted(df.get("device_type", pd.Series(dtype=object)).fillna("Unknown").unique().tolist())
-    device_sel = st.multiselect("Devices", options=device_opts, default=device_opts)
-
-    include_shipping = st.toggle("KPIs include shipping in revenue", value=False)
-
-# Apply filters
-mask = pd.Series(True, index=df.index)
-
-if "date_created" in df and date_range[0] and date_range[1]:
-    start_dt = pd.to_datetime(pd.Timestamp(date_range[0]).floor("D"))
-    end_dt   = pd.to_datetime(pd.Timestamp(date_range[1]).ceil("D"))
-    mask &= df["date_created"].between(start_dt, end_dt, inclusive="both")
-
-if status_sel and "status" in df:
-    mask &= df["status"].isin(status_sel)
-
-if device_sel and "device_type" in df:
-    mask &= df["device_type"].fillna("Unknown").isin(device_sel)
-
-dff = df.loc[mask].copy()
-
-# Convenience fields
-dff["revenue_gross"] = dff["order_total"].astype(float)
-dff["revenue_net"]   = (dff["order_total"].astype(float) - dff["shipping_total"].astype(float)).fillna(dff["order_total"])
-revenue_col = "revenue_gross" if include_shipping else "revenue_net"
-
-# ---------------------- KPIs ------------------------
-paid_mask = dff["status"].isin(PAID_STATUSES) if "status" in dff else pd.Series(True, index=dff.index)
-paid_df = dff.loc[paid_mask].copy()
-
-total_orders = int(len(paid_df))
-total_rev    = float(paid_df[revenue_col].sum())
-aov          = float(total_rev / total_orders) if total_orders else 0.0
-denom        = float(paid_df["order_total"].replace(0, np.nan).sum()) if total_orders else 0.0
-shipping_rate = float(paid_df["shipping_total"].fillna(0).sum() / denom) if denom else 0.0
-
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Paid Orders", f"{total_orders:,}")
-c2.metric("Revenue" + (" (incl. ship)" if include_shipping else " (excl. ship)"), f"£{total_rev:,.2f}")
-c3.metric("AOV", f"£{aov:,.2f}")
-c4.metric("Shipping as % of order total", f"{shipping_rate*100:,.1f}%")
-
-# ---------------------- Tabs ------------------------
-tab_map, tab_trends, tab_products, tab_customers, tab_marketing = st.tabs(
-    ["🗺️ UK Heatmap", "📈 Trends", "🐟 Products", "👤 Customers & Devices", "🎯 Marketing"]
-)
-
-# ---------------------- UK Heatmap ------------------
-with tab_map:
-    st.subheader("Order density map (paid orders)")
-
-    if {"latitude", "longitude"}.issubset(paid_df.columns):
-        geo_df = paid_df.dropna(subset=["latitude", "longitude"]).copy()
-        st.caption(f"Geocoded orders in selection: {len(geo_df):,} / {len(paid_df):,}")
-
-        if geo_df.empty:
-            st.info("No geocoded orders in the selected range.")
+    if "order_total" in orders_df.columns:
+        if "shipping_total" in orders_df.columns:
+            orders_df["revenue_net"] = (orders_df["order_total"] - orders_df["shipping_total"]).fillna(orders_df["order_total"])
         else:
-            # Wider bounds, then fallback if all filtered out
-            in_uk = (
-                geo_df["latitude"].between(48.0, 61.0) &
-                geo_df["longitude"].between(-11.0, 4.0)
-            )
-            map_df = geo_df.loc[in_uk, ["latitude", "longitude"]].copy()
-            if map_df.empty:
-                map_df = geo_df[["latitude", "longitude"]].copy()
+            orders_df["revenue_net"] = orders_df["order_total"]
 
-            default_view = pdk.ViewState(
-                latitude=float(map_df["latitude"].mean()),
-                longitude=float(map_df["longitude"].mean()),
-                zoom=5.5, pitch=35
-            )
+    if "total_items" not in orders_df.columns and "item_details" in orders_df.columns:
+        def _sum_qty(items):
+            try:
+                if isinstance(items, list):
+                    return sum(int(d.get("quantity", 0)) for d in items if isinstance(d, dict))
+            except Exception:
+                pass
+            return pd.NA
+        orders_df["total_items"] = orders_df["item_details"].apply(_sum_qty)
 
-            layer_type = st.radio("Layer", ["HexagonLayer", "HeatmapLayer"], horizontal=True)
-            data_for_map = map_df.rename(columns={"longitude": "lon", "latitude": "lat"})
-            if layer_type == "HexagonLayer":
-                radius = st.slider("Hex radius (meters)", 1000, 15000, 7000, 500)
-                elevation_scale = st.slider("Elevation scale", 1, 30, 8)
-                layer = pdk.Layer(
-                    "HexagonLayer",
-                    data=data_for_map,
-                    get_position="[lon, lat]",
-                    radius=radius,
-                    elevation_scale=elevation_scale,
-                    elevation_range=[0, 1000],
-                    extruded=True,
-                    pickable=True,
-                )
-            else:
-                layer = pdk.Layer(
-                    "HeatmapLayer",
-                    data=data_for_map,
-                    get_position="[lon, lat]",
-                    aggregation="MEAN",
-                    pickable=False,
-                )
+    return orders_df
 
-            r = pdk.Deck(
-                map_style="mapbox://styles/mapbox/light-v10",
-                initial_view_state=default_view,
-                layers=[layer],
-                tooltip={"text": "Orders around here"},
-            )
-            st.pydeck_chart(r, use_container_width=True)
-    else:
-        st.info("Latitude/Longitude columns not found.")
-
-# ---------------------- Trends ----------------------
-with tab_trends:
-    st.subheader("Daily revenue & order count")
-    if "date_created" in paid_df:
-        # FIX: correct typo -> sort_index()
-        ts = paid_df.set_index("date_created").sort_index()
-        daily = ts.resample("D").agg(
-            orders=("order_id", "count"),
-            revenue=(revenue_col, "sum")
-        ).reset_index()
-
-        left, right = st.columns([2,1], gap="large")
-        with left:
-            line = alt.Chart(daily).mark_line().encode(
-                x=alt.X("date_created:T", title="Date"),
-                y=alt.Y("revenue:Q", title="Revenue (£)"),
-                tooltip=["date_created:T", alt.Tooltip("revenue:Q", format=",.2f"), "orders:Q"]
-            ).properties(height=320)
-            st.altair_chart(line, use_container_width=True)
-        with right:
-            bar = alt.Chart(daily).mark_bar().encode(
-                x=alt.X("date_created:T", title=""),
-                y=alt.Y("orders:Q", title="Orders"),
-                tooltip=["date_created:T", "orders:Q"]
-            ).properties(height=320)
-            st.altair_chart(bar, use_container_width=True)
-
-        st.subheader("Orders heatmap (weekday × hour)")
-        wk = ts.copy()
-        wk["weekday"] = wk.index.day_name()
-        wk["hour"] = wk.index.hour
-        pivot = wk.groupby(["weekday", "hour"]).size().reset_index(name="orders")
-        cat_order = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-        pivot["weekday"] = pd.Categorical(pivot["weekday"], categories=cat_order, ordered=True)
-        heat = alt.Chart(pivot).mark_rect().encode(
-            x=alt.X("hour:O", title="Hour of day"),
-            y=alt.Y("weekday:O", sort=cat_order, title="Weekday"),
-            color=alt.Color("orders:Q", title="Orders"),
-            tooltip=["weekday:O","hour:O","orders:Q"]
-        ).properties(height=280)
-        st.altair_chart(heat, use_container_width=True)
-    else:
-        st.info("Missing date_created column.")
-
-# ---------------------- Products --------------------
-with tab_products:
-    st.subheader("Top products (by quantity & revenue)")
-    if "item_details" in paid_df:
-        exploded = paid_df[["order_id", "item_details"]].explode("item_details").dropna(subset=["item_details"])
-        items = pd.json_normalize(exploded["item_details"])
-        items["quantity"] = pd.to_numeric(items.get("quantity", 0), errors="coerce").fillna(0)
-        items["total_price"] = pd.to_numeric(items.get("total_price", 0.0), errors="coerce").fillna(0.0)
-        items["name"] = items.get("name").fillna("Unknown")
-
-        by_qty = items.groupby(["product_id","name"], dropna=False)["quantity"] \
-                      .sum().reset_index().sort_values("quantity", ascending=False).head(15)
-        by_rev = items.groupby(["product_id","name"], dropna=False)["total_price"] \
-                      .sum().reset_index().sort_values("total_price", ascending=False).head(15)
-
-        c1, c2 = st.columns(2)
-        with c1:
-            ch1 = alt.Chart(by_qty).mark_bar().encode(
-                x=alt.X("quantity:Q", title="Quantity"),
-                y=alt.Y("name:N", sort="-x", title="Product"),
-                tooltip=["name:N","quantity:Q"]
-            ).properties(height=420, title="Top by Quantity")
-            st.altair_chart(ch1, use_container_width=True)
-        with c2:
-            ch2 = alt.Chart(by_rev).mark_bar().encode(
-                x=alt.X("total_price:Q", title="Revenue (£)"),
-                y=alt.Y("name:N", sort="-x", title="Product"),
-                tooltip=["name:N", alt.Tooltip("total_price:Q", format=",.2f")]
-            ).properties(height=420, title="Top by Revenue")
-            st.altair_chart(ch2, use_container_width=True)
-    else:
-        st.info("Missing item_details JSON.")
-
-# --------------- Customers & Devices ----------------
-with tab_customers:
-    st.subheader("Guest vs Registered")
-    if "is_guest" in dff:
-        agg = dff.groupby("is_guest").agg(
-            orders=("order_id", "count"),
-            revenue=(revenue_col, "sum")
-        ).reset_index()
-        agg["label"] = agg["is_guest"].map({True: "Guest", False: "Registered"})
-        pie = alt.Chart(agg).mark_arc().encode(
-            theta="orders:Q",
-            color="label:N",
-            tooltip=["label:N","orders:Q", alt.Tooltip("revenue:Q", format=",.2f")]
-        ).properties(height=300)
-        st.altair_chart(pie, use_container_width=True)
-
-    st.subheader("AOV by device")
-    if "device_type" in dff:
-        dev = dff.groupby("device_type").agg(
-            orders=("order_id","count"),
-            revenue=(revenue_col,"sum")
-        ).reset_index()
-        dev["aov"] = dev["revenue"] / dev["orders"].replace(0, np.nan)
-        bar = alt.Chart(dev).mark_bar().encode(
-            x=alt.X("aov:Q", title="AOV (£)"),
-            y=alt.Y("device_type:N", sort="-x", title="Device"),
-            tooltip=[ "device_type:N",
-                      alt.Tooltip("aov:Q", format=",.2f"),
-                      "orders:Q",
-                      alt.Tooltip("revenue:Q", format=",.2f") ]
-        ).properties(height=320)
-        st.altair_chart(bar, use_container_width=True)
-
-    st.subheader("Weekday performance")
-    if "date_created" in dff:
-        tmp = dff.copy()
-        tmp["weekday"] = tmp["date_created"].dt.day_name()
-        wk = tmp.groupby("weekday").agg(
-            orders=("order_id","count"),
-            revenue=(revenue_col,"sum")
-        ).reset_index()
-        cat_order = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-        wk["weekday"] = pd.Categorical(wk["weekday"], categories=cat_order, ordered=True)
-        bars = alt.Chart(wk).mark_bar().encode(
-            x=alt.X("weekday:O", sort=cat_order, title=""),
-            y=alt.Y("orders:Q", title="Orders"),
-            tooltip=["weekday:O","orders:Q", alt.Tooltip("revenue:Q", format=",.2f")]
-        ).properties(height=300)
-        st.altair_chart(bars, use_container_width=True)
-
-# ---------------------- Marketing -------------------
-with tab_marketing:
-    st.subheader("Attribution / Campaigns")
-    left, right = st.columns(2)
-
-    if "attribution_source" in dff:
-        src = dff.copy()
-        src["attribution_source"] = src["attribution_source"].fillna("Unknown")
-        by_src = src.groupby("attribution_source").agg(
-            orders=("order_id","count"),
-            revenue=(revenue_col,"sum")
-        ).reset_index().sort_values("orders", ascending=False).head(12)
-        with left:
-            ch = alt.Chart(by_src).mark_bar().encode(
-                x=alt.X("orders:Q", title="Orders"),
-                y=alt.Y("attribution_source:N", sort="-x", title="Source"),
-                tooltip=["attribution_source:N","orders:Q", alt.Tooltip("revenue:Q", format=",.2f")]
-            ).properties(height=320, title="Orders by Source")
-            st.altair_chart(ch, use_container_width=True)
-
-    if "campaign_source" in dff or "campaign_medium" in dff:
-        camp = dff.copy()
-        camp["campaign_source"] = camp.get("campaign_source", pd.Series(index=camp.index)).fillna("Unknown")
-        camp["campaign_medium"] = camp.get("campaign_medium", pd.Series(index=camp.index)).fillna("Unknown")
-        by_camp = camp.groupby(["campaign_source","campaign_medium"]).agg(
-            orders=("order_id","count"),
-            revenue=(revenue_col,"sum")
-        ).reset_index().sort_values("orders", ascending=False).head(20)
-        with right:
-            ch = alt.Chart(by_camp).mark_bar().encode(
-                x=alt.X("orders:Q", title="Orders"),
-                y=alt.Y("campaign_source:N", sort="-x", title="UTM Source"),
-                color=alt.Color("campaign_medium:N", title="UTM Medium"),
-                tooltip=["campaign_source:N","campaign_medium:N","orders:Q", alt.Tooltip("revenue:Q", format=",.2f")]
-            ).properties(height=320, title="Top Campaigns")
-            st.altair_chart(ch, use_container_width=True)
-
-    st.subheader("Coupons")
-    if "coupon_details" in paid_df:
-        coup = paid_df[["order_id","coupon_details", revenue_col]].explode("coupon_details")
-        coup["has_coupon"] = coup["coupon_details"].notna()
-
-        by_use = coup.groupby("has_coupon").agg(
-            orders=("order_id","nunique"),
-            revenue=(revenue_col,"sum")
-        ).reset_index()
-        by_use["label"] = by_use["has_coupon"].map({True:"With coupon", False:"No coupon"})
-
-        c1, c2 = st.columns([1,1])
-        with c1:
-            ch = alt.Chart(by_use).mark_bar().encode(
-                x=alt.X("label:N", title=""),
-                y=alt.Y("orders:Q", title="Orders"),
-                tooltip=["label:N","orders:Q", alt.Tooltip("revenue:Q", format=",.2f")]
-            ).properties(height=300, title="Coupon usage impact")
-            st.altair_chart(ch, use_container_width=True)
-
-        cc = coup.dropna(subset=["coupon_details"]).copy()
-        if not cc.empty:
-            codes = pd.json_normalize(cc["coupon_details"])
-            codes = pd.concat([codes, cc[[revenue_col, "order_id"]].reset_index(drop=True)], axis=1)
-            top_codes = codes.groupby("code").agg(
-                orders=("order_id","nunique"),
-                discount=("discount_amount","sum"),
-                revenue=(revenue_col,"sum")
-            ).reset_index().sort_values("orders", ascending=False).head(12)
-            with c2:
-                ch2 = alt.Chart(top_codes).mark_bar().encode(
-                    x=alt.X("orders:Q", title="Orders"),
-                    y=alt.Y("code:N", sort="-x", title="Coupon"),
-                    tooltip=["code:N","orders:Q",
-                             alt.Tooltip("discount:Q", format=",.2f"),
-                             alt.Tooltip("revenue:Q", format=",.2f")]
-                ).properties(height=300, title="Top coupon codes")
-                st.altair_chart(ch2, use_container_width=True)
-
-# ---------------------- Raw Data (optional) ---------
-with st.expander("Show filtered data"):
-    st.dataframe(dff, use_container_width=True)
 
 if __name__ == "__main__":
-    pass
+    main()
