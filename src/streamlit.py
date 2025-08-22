@@ -26,20 +26,19 @@ st.set_page_config(page_title=title, page_icon=logo, layout="wide")
 
 
 def main():
-    @st.cache_data(show_spinner="Loading orders from database...")
-    def load_orders_from_database():
+    all_orders = load_orders_from_database()
 
-        # logo and title
-        logo_column, title_column = st.columns([1, 12])
-        with logo_column:
-            st.image(logo)
-        with title_column:
-            st.markdown(f"<h1 style='text-align: center'>{title}</h1>", unsafe_allow_html=True)
+    # logo and title
+    logo_column, title_column = st.columns([1, 12])
+    with logo_column:
+        st.image(logo)
+    with title_column:
+        st.markdown(f"<h1 style='text-align: center'>{title}</h1>", unsafe_allow_html=True)
 
-        st.markdown("---")
-        
-        # map, space and bar columns
-        map_column, space, performance_column = st.columns([1, 0.05, 2])
+    st.markdown("---")
+    
+    # map, space and bar columns
+    map_column, space, performance_column = st.columns([1, 0.05, 2])
 
 ##################################################################   map  ##################################################################
     with map_column:
@@ -414,6 +413,7 @@ def main():
 
 
 ##################################################################   LOAD DATA  ##################################################################
+@st.cache_data(show_spinner="Loading orders from database")
 def load_orders_from_database():
     db_engine = get_db_engine()
     orders_df = pd.read_sql_table(db_table, con=db_engine, schema=db_schema)
