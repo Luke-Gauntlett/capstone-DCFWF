@@ -427,7 +427,6 @@ def load_orders_from_database():
         if col in orders_df.columns:
             orders_df[col] = pd.to_numeric(orders_df[col], errors="coerce")
 
-    # JSON (possibly serialized)
     def _parse_json(v):
         if isinstance(v, (list, dict)) or v is None or (isinstance(v, float) and pd.isna(v)):
             return v
