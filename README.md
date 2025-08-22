@@ -19,12 +19,12 @@ So that I can obtain comprehensive raw data, allow for incremental updates, and 
 
 #### Epic 1 ACCEPTANCE CRITERIA
 
-- [ ] Data is extracted from the website API for orders, customers, and products
-- [ ] Full extraction runs if no previous timestamp exists
-- [ ] Supports incremental extraction based on last run timestamp
-- [ ] Extraction handles API pagination and rate limits
-- [ ] Data integrity is maintained (no missing data)
-- [ ] Extracted data is saved to raw storage (CSV)
+- [x] Data is extracted from the website API for orders
+- [x] Full extraction runs if no previous timestamp exists
+- [x] Supports incremental extraction based on last run timestamp
+- [x] Extraction handles API pagination and rate limits
+- [x] Data integrity is maintained (no missing data)
+- [x] Extracted data is passed to transform script 
 - [ ] tests verify extraction success
 - [ ] Successful extractions are logged with timestamps
 - [ ] API errors are logged and handled gracefully
@@ -43,10 +43,10 @@ So that it is ready for accurate analysis and complies with privacy regulations.
 
 #### Epic 2 ACCEPTANCE CRITERIA
 
-- [ ] Remove duplicate and incomplete records
-- [ ] Standardize data types
-- [ ] Mask or hash or remove personally identifiable information (names, emails, phone numbers)
-- [ ] Enrich order data with calculated metrics
+- [x] Remove duplicate and incomplete records
+- [x] Standardize data types
+- [x] Mask or hash or remove personally identifiable information (names, emails, phone numbers)
+- [x] Enrich order data with calculated metrics
 - [ ] Validate data against expected schema
 - [ ] Transformation errors are logged and handled
 - [ ] Successful transformations are logged with row counts
@@ -64,9 +64,9 @@ So that it is securely stored and readily available for analysis.
 
 ---
 
-- [ ] Database connection is established securely using environment variables
-- [ ] Transformed data is loaded into target tables without data loss
-- [ ] Existing data is updated or new data appended
+- [x] Database connection is established securely using environment variables
+- [x] Transformed data is loaded into target tables without data loss
+- [x] Existing data is updated or new data appended
 - [ ] Data integrity is verified post-load
 - [ ] Tests verify loading logic
 - [ ] Load errors are logged and handled gracefully
@@ -84,11 +84,11 @@ So I can easily understand key business insights and inform marketing strategies
 
 ---
 
-- [ ] Dashboard connects to the database
-- [ ] Displays key metrics (average customer spend, most/least bought products, highest profit items, uk heatmap)
-- [ ] Includes interactive filters (date range, product category)
-- [ ] Visualizations are clear and responsive
-- [ ] Dashboard updates reflect the latest available data
+- [x] Dashboard connects to the database
+- [x] Displays key metrics (average customer spend, most/least bought products, highest profit items, uk heatmap)
+- [x] Includes interactive filters (date range, product category)
+- [x] Visualizations are clear and responsive
+- [x] Dashboard updates reflect the latest available data
 - [ ] testing verifies visualizations
 - [ ] Errors in data retrieval are logged and handled
 
@@ -96,7 +96,7 @@ So I can easily understand key business insights and inform marketing strategies
 
 ## Definition of Done
 
-- [ ] All tasks are completed
+- [x] All tasks are completed
 - [ ] All tests are passing
 - [ ] Code coverage is at least 80%
 - [ ] Code is linted and follows style guidelines
