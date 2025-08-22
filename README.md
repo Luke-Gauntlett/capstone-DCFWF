@@ -104,3 +104,15 @@ So I can easily understand key business insights and inform marketing strategies
 - [ ] Code is merged into the main branch
 
 ---
+
+
+improvements:
+more analysis such as most frequently bought with x item
+testing
+linting
+logging
+schedule works?
+
+
+could be run in the cloud using lambas and event bridge would be good for logging but github actions is adequate
+  
