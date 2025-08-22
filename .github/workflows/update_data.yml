@@ -3,7 +3,7 @@ name: Run ETL Pipeline
 on:
   schedule:
     # 01:30 UTC ≈ 02:00 UK year-round (±30 min for DST)
-    - cron: '55 8 * * *'
+    - cron: '30 1 * * *'
   workflow_dispatch: 
 
 jobs:
